@@ -123,7 +123,7 @@ fun AppNavigation(
                                     saveState = true
                                 }
                                 launchSingleTop = true
-                                restoreState = true
+                                restoreState = target != GithubStoreGraph.ExploreScreen
                             }
                         },
                         rail = rail,
@@ -1011,7 +1011,7 @@ fun AppNavigation(
                                     }
 
                                     launchSingleTop = true
-                                    restoreState = true
+                                    restoreState = it != GithubStoreGraph.ExploreScreen
                                 }
                             },
                             isUpdateAvailable = appsState.apps.any { it.installedApp.isUpdateAvailable },
