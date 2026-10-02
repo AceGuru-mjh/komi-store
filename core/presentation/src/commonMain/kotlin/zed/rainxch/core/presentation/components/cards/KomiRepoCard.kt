@@ -118,7 +118,7 @@ fun KomiRepoCard(
                 CardIconTile(
                     monogram = monogram ?: name.take(2),
                     imageUrl = imageUrl,
-                    size = if (compact) 52.dp else 60.dp,
+                    size = if (compact) 40.dp else 60.dp,
                     colors = colors
                 )
                 Column(modifier = Modifier.weight(1f)) {

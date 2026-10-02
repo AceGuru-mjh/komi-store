@@ -133,9 +133,9 @@ class FeedViewModel(
                 browseFilterStore.setCategory(action.category)
             }
 
-            FeedAction.OnToggleLayoutType -> {
-                val grid = _state.value.layoutType == FeedLayoutType.LIST
-                _state.update { it.copy(layoutType = if (grid) FeedLayoutType.GRID else FeedLayoutType.LIST) }
+            FeedAction.OnToggleGridLayout -> {
+                val grid = !_state.value.isGridLayout
+                _state.update { it.copy(isGridLayout = grid) }
                 viewModelScope.launch { tweaksRepository.setRepoGridLayout(grid) }
             }
 
@@ -374,7 +374,7 @@ class FeedViewModel(
     private fun observeFeedLayout() {
         viewModelScope.launch {
             tweaksRepository.getRepoGridLayout().collect { grid ->
-                _state.update { it.copy(layoutType = if (grid) FeedLayoutType.GRID else FeedLayoutType.LIST) }
+                _state.update { it.copy(isGridLayout = grid) }
             }
         }
     }
