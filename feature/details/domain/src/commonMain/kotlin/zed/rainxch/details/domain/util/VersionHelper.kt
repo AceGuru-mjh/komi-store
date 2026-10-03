@@ -38,8 +38,6 @@ object VersionHelper {
         if (candidateIndex != -1 && currentIndex != -1) {
             return candidateIndex > currentIndex
         }
-        // No ordering evidence, so don't claim a downgrade: the platform rejects a real
-        // one at install, while a wrong guess demanded an uninstall.
         return false
     }
 }

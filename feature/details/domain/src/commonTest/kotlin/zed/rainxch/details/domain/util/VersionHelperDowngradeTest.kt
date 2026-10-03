@@ -22,7 +22,6 @@ class VersionHelperDowngradeTest {
             htmlUrl = "",
         )
 
-    // Newest first, as the repository sorts them.
     private val releasesNewestFirst = listOf(
         release("2.0.2", "2026-09-13T13:12:13Z"),
         release("2.0.1", "2026-08-24T03:05:31Z"),
@@ -70,7 +69,6 @@ class VersionHelperDowngradeTest {
 
     @Test
     fun picking_an_older_legacy_alpha_is_still_a_downgrade() {
-        // Alpha4.7.4 parses as Unknown, but it is in the list, so position still decides.
         assertTrue(
             VersionHelper.isDowngradeVersion(
                 candidate = "Alpha4.7.4",

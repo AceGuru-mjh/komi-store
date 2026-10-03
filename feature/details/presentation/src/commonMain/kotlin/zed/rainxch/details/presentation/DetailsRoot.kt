@@ -243,21 +243,9 @@ fun DetailsRoot(
                     )
                 }
             },
-            // KomiDialog only offers dismiss/confirm slots, so all three actions share one
-            // row to keep cancel at the start and the two choices grouped at the end.
             confirmButton = {
                 val personality = LocalPersonality.current
-                // The three labels sit on the dialog surface, which is surfaceContainerHigh — not
-                // the background that the personality's own `isDark` flag is derived from. The two
-                // agree on every palette this app ships today, so reading the right one changes
-                // nothing visibly; it is read off the surface that actually paints behind the
-                // labels so a palette that later shades a dialog against its background cannot
-                // silently take the wrong side of the contrast pair.
                 val dialogSurfaceIsDark = personality.colors.surfaceContainerHigh.luminance() < 0.5f
-                // FlowRow, not Row: the three labels are long in several locales (Russian in
-                // particular), so on a 360dp screen — and worse at large accessibility font
-                // scales — a single line clips them. The two choices stay grouped in the inner
-                // Row; only the cancel-vs-choices break may wrap.
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -269,14 +257,6 @@ fun DetailsRoot(
                             viewModel.onAction(DetailsAction.OnDismissDowngradeWarning)
                         },
                         label = stringResource(Res.string.cancel),
-                        // Text with an explicit pair, like its two neighbours. Left on the variant
-                        // default this was the only one of the three that followed the accent, so
-                        // on a personality whose accent runs close to the error colour cancel
-                        // became both the only emphasised action and one that read as destructive
-                        // — against the promise of three equal choices. A neutral pair keeps it the
-                        // quietest of the three; branched on the dialog surface for the same reason
-                        // as the blue beside it, and clearing 3:1 on all six shipped surfaces
-                        // (worst case 3.49:1).
                         variant = KomiButtonVariant.Text,
                         size = KomiButtonSize.Sm,
                         containerColor = Color.Transparent,
@@ -293,11 +273,6 @@ fun DetailsRoot(
                                 viewModel.onAction(DetailsAction.OnConfirmDowngradeUninstall)
                             },
                             label = stringResource(Res.string.uninstall_first),
-                            // Text rather than Destructive: the dialog offers three equal choices,
-                            // so the colour on the label carries the meaning instead of a fill.
-                            // Text also skips the manga personality's outline, which a transparent
-                            // container would otherwise draw. The container has to be stated for
-                            // the colour pair to be complete.
                             variant = KomiButtonVariant.Text,
                             size = KomiButtonSize.Sm,
                             containerColor = Color.Transparent,
@@ -308,23 +283,9 @@ fun DetailsRoot(
                                 viewModel.onAction(DetailsAction.OnConfirmDowngradeInstall)
                             },
                             label = stringResource(Res.string.install_anyway),
-                            // Text rather than Primary, so neither choice reads as the one the
-                            // dialog recommends.
                             variant = KomiButtonVariant.Text,
                             size = KomiButtonSize.Sm,
                             containerColor = Color.Transparent,
-                            // A pair, not one fixed blue, and branched on the surface the label
-                            // actually sits on rather than the accent. Measured against the six
-                            // dialog surfaces this app ships (Classic light/dark/black and Manga
-                            // light/dark/nord): the deep blue alone drops to 1.47:1 on the light
-                            // surfaces and the pale one to 5.07 on nord, while no single value can
-                            // clear 3:1 everywhere — the best any one colour manages is 2.53:1,
-                            // because nord (#434C5E) sits mid-range and pulls the requirement in
-                            // opposite directions from the light surfaces. The pair below clears
-                            // 3:1 on all six with 4.23:1 as the worst case.
-                            //
-                            // Fixed rather than accent-following, because the accent can itself be
-                            // red and would make this read as the destructive choice.
                             contentColor =
                                 if (dialogSurfaceIsDark) {
                                     Color(0xFFB6C4FF)
