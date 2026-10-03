@@ -79,10 +79,6 @@ fun KomiButton(
     fullWidth: Boolean = false,
     leadingIcon: ImageVector? = null,
     trailingIcon: ImageVector? = null,
-    // Fixed colours for actions whose meaning must not follow the accent, which can be
-    // chosen close to the error colour. Both must be given together; a partial pair is
-    // ignored so the variant keeps its own themed colours (e.g. a Text button stays a
-    // text button instead of being echoed into a filled primary).
     containerColor: Color = Color.Unspecified,
     contentColor: Color = Color.Unspecified,
 ) {
@@ -183,10 +179,6 @@ private fun MangaButton(
                 pressProgress = { pressProgress.value },
                 hoverProgress = { hoverProgress.value },
                 shadow = DpOffset(metrics.shadow, metrics.shadow),
-                // Replacing rather than multiplying, unlike the container, border and content
-                // below: this colour is always the palette's shadow, which every personality
-                // defines opaque, so the two spellings agree here. Multiplying only matters
-                // where the source can carry a caller's own alpha — the override pair.
                 shadowColor = colors.shadow.copy(alpha = alpha),
                 shape = shape,
             )
@@ -272,10 +264,6 @@ private fun ClassicButton(
 
     val overrideColors =
         if (containerColor != Color.Unspecified && contentColor != Color.Unspecified) {
-            // Built with the variant's own factory so an override replaces only the enabled
-            // colours: the filled factory's defaults would otherwise fill every variant's
-            // disabled/other slots with the filled theme (a Text button turning into a grey
-            // filled pill when disabled, Destructive losing error/onError to the accent).
             when (variant) {
                 KomiButtonVariant.Primary,
                 KomiButtonVariant.Destructive,
