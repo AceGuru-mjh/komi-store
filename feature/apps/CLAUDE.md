@@ -35,7 +35,7 @@ interface AppsRepository {
 ## Notes
 
 - Uses `InstalledAppsRepository` + `SyncInstalledAppsUseCase`. `openApp` via `AppLauncher`. `PackageMonitor` + `Installer` (Android). Data layer injects `ForgejoClientRegistry`; non-null `sourceHost` on `getLatestRelease` / `fetchRepoInfo` / `linkAppToRepo` routes to the Forgejo client (else default GitHub-direct path).
-- **`sourceHost` propagation:** `InstalledApp.sourceHost` persisted on link; `AppsAction.OpenAppDetails` / `OpenRepoDetails` + `AppsEvent.NavigateToRepo` carry `sourceHost`; `AppsRoot.onNavigateToRepo` is `(repoId, sourceHost, owner, repo) -> Unit` and routes to `GithubStoreGraph.DetailsScreen(sourceHost = …)`.
+- **`sourceHost` propagation:** `InstalledApp.sourceHost` persisted on link; `AppsAction.OpenAppDetails` / `OpenRepoDetails` + `AppsEvent.NavigateToRepo` carry `sourceHost`; `AppsRoot.onNavigateToRepo` is `(repoId, sourceHost, owner, repo, packageName) -> Unit` and routes to `GithubStoreGraph.DetailsScreen(sourceHost = …, packageName = …)`.
 - **Multi-source backend match:** `RepoSuggestion` candidates may come from GitHub *or* a Forgejo host; the link sheet displays the source host chip per row so the user picks the right forge variant.
 - Sort + search: `AppSortRule` enum (UpdatesFirst default, AlphabeticalAZ, RecentlyAdded, RecentlyUpdated). Persisted in DataStore. Inline search filters appName / packageName.
 - Per-app actions: Ignore-updates (silence badge), Skip-this-release (per-tag, auto-clear on next release), Advanced filter (regex on asset names + monorepo fallback), Pin variant (token-set + glob fingerprint), Inspect APK (decoded manifest sheet).

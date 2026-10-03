@@ -48,6 +48,7 @@ sealed interface AppsAction {
         val sourceHost: String? = null,
         val owner: String? = null,
         val repo: String? = null,
+        val packageName: String? = null,
     ) : AppsAction
 
     data class OnUninstallApp(

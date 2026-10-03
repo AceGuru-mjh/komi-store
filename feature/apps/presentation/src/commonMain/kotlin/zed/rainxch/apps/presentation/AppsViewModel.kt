@@ -409,6 +409,7 @@ class AppsViewModel(
                             sourceHost = action.sourceHost,
                             owner = action.owner,
                             repo = action.repo,
+                            packageName = action.packageName,
                         ),
                     )
                 }
