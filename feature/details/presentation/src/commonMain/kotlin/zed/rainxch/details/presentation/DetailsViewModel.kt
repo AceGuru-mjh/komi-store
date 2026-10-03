@@ -56,6 +56,7 @@ import zed.rainxch.core.domain.system.PackageMonitor
 import zed.rainxch.core.domain.use_cases.SyncInstalledAppsUseCase
 import zed.rainxch.core.presentation.utils.daysSinceIso
 import zed.rainxch.core.domain.utils.AssetFilter
+import zed.rainxch.core.domain.utils.AssetOwnership
 import zed.rainxch.core.domain.utils.AssetVariant
 import zed.rainxch.core.domain.utils.VersionMath
 import zed.rainxch.core.domain.helpers.BrowserHelper
@@ -266,9 +267,9 @@ class DetailsViewModel(
             }
 
             DetailsAction.OnConfirmDowngradeUninstall -> {
-                _state.value.downgradeWarning ?: return
+                val warning = _state.value.downgradeWarning ?: return
                 dismissDowngradeWarning()
-                uninstallApp()
+                uninstallPackage(warning.packageName)
             }
 
             DetailsAction.OnDismissSigningKeyWarning -> {
@@ -920,7 +921,12 @@ class DetailsViewModel(
                 val (installable, primary) =
                     recomputeAssetsForRelease(selected, _state.value.installedApp)
                 val newInstalledApp =
-                    pickPrimaryInstalledApp(_state.value.installedApps, primary?.name, installable)
+                    pickPrimaryInstalledApp(
+                        _state.value.installedApps,
+                        primary?.name,
+                        installable,
+                        releases,
+                    )
                 val insights = computeReleaseInsights(releases, newInstalledApp)
                 _state.update {
                     it.copy(
@@ -1015,44 +1021,41 @@ class DetailsViewModel(
             val filtered = installable.filter { filter.matches(it.name) }
             if (filtered.isNotEmpty()) return filtered
         }
-        if (anchorAssetName == null) return installable
-        return installable.filter { isSameAppAsset(it.name, anchorAssetName) }.ifEmpty { installable }
-    }
-
-    private fun isSameAppAsset(assetName: String, otherAssetName: String): Boolean {
-        val stem = AssetVariant.extractBaseStem(assetName)
-        return stem.isNotEmpty() && stem == AssetVariant.extractBaseStem(otherAssetName)
+        return AssetOwnership.narrowToApp(installable, anchorAssetName)
     }
 
     private fun pickPrimaryInstalledApp(
         apps: List<InstalledApp>,
         primaryAssetName: String?,
         releaseAssets: List<GithubAsset>,
+        releaseHistory: List<GithubRelease> = _state.value.allReleases,
     ): InstalledApp? {
         if (apps.isEmpty()) return null
         if (primaryAssetName == null) {
             return apps.singleOrNull() ?: apps.firstOrNull { !it.isUpdateAvailable } ?: apps.first()
         }
-        apps.firstOrNull { app ->
-            AssetFilter.parse(app.assetFilterRegex)?.getOrNull()?.matches(primaryAssetName) == true
-        }?.let { return it }
-        val primaryGlob = AssetVariant.deriveGlob(primaryAssetName)
-        if (primaryGlob != null) {
-            apps.firstOrNull { app ->
-                val appGlob =
-                    app.installedAssetName?.let(AssetVariant::deriveGlob) ?: app.assetGlobPattern
-                appGlob == primaryGlob
-            }?.let { return it }
-        }
-        apps.firstOrNull { app ->
-            app.installedAssetName?.let { isSameAppAsset(it, primaryAssetName) } == true
-        }?.let { return it }
-
-        // Own asset family absent from this release means a rename, not a different app.
-        val sole = apps.singleOrNull() ?: return null
-        val soleAsset = sole.installedAssetName ?: return sole
-        return sole.takeIf { releaseAssets.none { isSameAppAsset(it.name, soleAsset) } }
+        return AssetOwnership.ownerOf(primaryAssetName, apps, releaseAssets, releaseHistory)
     }
+
+    private fun List<GithubRelease>.firstOwnedBy(
+        app: InstalledApp,
+        category: ReleaseCategory,
+        repoApps: List<InstalledApp>,
+        anchorAssetName: String?,
+    ): GithubRelease? =
+        firstOrNull { release ->
+            val inCategory =
+                when (category) {
+                    ReleaseCategory.STABLE -> !release.isEffectivelyPreRelease()
+                    ReleaseCategory.PRE_RELEASE -> release.isEffectivelyPreRelease()
+                    ReleaseCategory.ALL -> true
+                }
+            if (!inCategory) return@firstOrNull false
+            val (installable, primary) = recomputeAssetsForRelease(release, app, anchorAssetName)
+            primary != null &&
+                pickPrimaryInstalledApp(repoApps, primary.name, installable, this)?.packageName ==
+                app.packageName
+        }
 
     private fun observeInstalledApp(repoId: Long) {
         viewModelScope.launch {
@@ -1533,17 +1536,21 @@ class DetailsViewModel(
 
     private fun uninstallApp() {
         val installedApp = _state.value.installedApp ?: return
-        logger.debug("Uninstalling app: ${installedApp.packageName}")
+        uninstallPackage(installedApp.packageName)
+    }
+
+    private fun uninstallPackage(packageName: String) {
+        logger.debug("Uninstalling app: $packageName")
         viewModelScope.launch {
             try {
-                installer.uninstall(installedApp.packageName)
+                installer.uninstall(packageName)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                logger.error("Failed to request uninstall for ${installedApp.packageName}: ${e.message}")
+                logger.error("Failed to request uninstall for $packageName: ${e.message}")
                 _events.send(
                     DetailsEvent.OnMessage(
-                        getString(Res.string.failed_to_uninstall, installedApp.packageName),
+                        getString(Res.string.failed_to_uninstall, packageName),
                     ),
                 )
             }
@@ -2597,19 +2604,16 @@ class DetailsViewModel(
                     } else {
                         ReleaseCategory.STABLE
                     }
-                val releasesShippingInstalledApp =
-                    installedAssetName?.let { name ->
-                        allReleases.filter { release ->
-                            release.assets.any { isSameAppAsset(it.name, name) }
-                        }
-                    }.orEmpty()
-                val newestInChannel = allReleases.firstInCategory(installedChannel)
                 val selectedRelease =
-                    newestInChannel?.takeIf { release ->
-                        release.assets.any { installer.isAssetInstallable(it.name) }
+                    installedApp?.let { app ->
+                        allReleases.firstOwnedBy(
+                            app = app,
+                            category = installedChannel,
+                            repoApps = allInstalledApps,
+                            anchorAssetName = installedAssetName,
+                        )
                     }
-                        ?: releasesShippingInstalledApp.firstInCategory(installedChannel)
-                        ?: newestInChannel
+                        ?: allReleases.firstInCategory(installedChannel)
                         ?: allReleases.firstInCategory(ReleaseCategory.ALL)
                 val resolvedCategory =
                     if (selectedRelease?.isEffectivelyPreRelease() == true) {
