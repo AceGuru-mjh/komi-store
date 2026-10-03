@@ -175,13 +175,15 @@ fun AppDetailPane(
                 modifier = Modifier.weight(1f),
             )
 
-            KomiButton(
-                onClick = onUninstall,
-                label = stringResource(Res.string.uninstall),
-                variant = KomiButtonVariant.Destructive,
-                enabled = !appItem.isBusy,
-                leadingIcon = Icons.Outlined.DeleteOutline,
-            )
+            if (!app.isPendingInstall) {
+                KomiButton(
+                    onClick = onUninstall,
+                    label = stringResource(Res.string.uninstall),
+                    variant = KomiButtonVariant.Destructive,
+                    enabled = !appItem.isBusy,
+                    leadingIcon = Icons.Outlined.DeleteOutline,
+                )
+            }
         }
 
         Spacer(Modifier.height(20.dp))

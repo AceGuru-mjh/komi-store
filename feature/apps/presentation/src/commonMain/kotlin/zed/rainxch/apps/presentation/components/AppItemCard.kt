@@ -495,18 +495,20 @@ fun AppItemCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val uninstallDescription = stringResource(Res.string.uninstall)
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clickable(enabled = !appItem.isBusy, onClick = onUninstallClick),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    KomiIcon(
-                        imageVector = Icons.Outlined.DeleteOutline,
-                        contentDescription = uninstallDescription,
-                        tint = colors.error,
-                    )
+                if (!app.isPendingInstall) {
+                    val uninstallDescription = stringResource(Res.string.uninstall)
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clickable(enabled = !appItem.isBusy, onClick = onUninstallClick),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        KomiIcon(
+                            imageVector = Icons.Outlined.DeleteOutline,
+                            contentDescription = uninstallDescription,
+                            tint = colors.error,
+                        )
+                    }
                 }
 
                 when (appItem.updateState) {
