@@ -16,21 +16,27 @@ import zed.rainxch.core.data.dto.ReleaseNetwork
 import zed.rainxch.core.data.local.db.AppDatabase
 import zed.rainxch.core.data.local.db.dao.InstalledAppDao
 import zed.rainxch.core.data.local.db.dao.UpdateHistoryDao
+import zed.rainxch.core.data.local.db.entities.InstalledAppEntity
 import zed.rainxch.core.data.local.db.entities.UpdateHistoryEntity
 import zed.rainxch.core.data.mappers.toDomain
+import zed.rainxch.core.data.mappers.toReleaseWindow
 import zed.rainxch.core.data.mappers.toEntity
 import zed.rainxch.core.data.network.GitHubClientProvider
 import zed.rainxch.core.data.network.executeRequest
 import zed.rainxch.core.domain.model.account.github.GithubAsset
 import zed.rainxch.core.domain.model.account.github.GithubRelease
+import zed.rainxch.core.domain.model.account.github.isEffectivelyPreRelease
 import zed.rainxch.core.domain.model.installation.InstallSource
 import zed.rainxch.core.domain.model.installation.InstalledApp
+import zed.rainxch.core.domain.model.installation.clearPending
+import zed.rainxch.core.domain.model.installation.confirmInstall
+import zed.rainxch.core.domain.model.installation.markPending
 import zed.rainxch.core.domain.model.smart_detect.MatchingPreview
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
 import zed.rainxch.core.domain.system.Installer
-import zed.rainxch.core.domain.model.account.github.isEffectivelyPreRelease
 import zed.rainxch.core.domain.utils.AssetFilter
 import zed.rainxch.core.domain.utils.AssetVariant
+import zed.rainxch.core.domain.utils.UpdateVerdict
 import zed.rainxch.core.domain.utils.VersionMath
 
 class InstalledAppsRepositoryImpl(
@@ -117,13 +123,7 @@ class InstalledAppsRepositoryImpl(
             },
         )
         if (backendReleases != null) {
-            return backendReleases
-                .asSequence()
-                .filter { it.draft != true }
-                .sortedByDescending { it.publishedAt ?: it.createdAt ?: "" }
-                .map { it.toDomain() }
-                .filter { includePreReleases || !it.isEffectivelyPreRelease() }
-                .toList()
+            return backendReleases.toReleaseWindow(includePreReleases)
         }
 
         return try {
@@ -257,6 +257,37 @@ class InstalledAppsRepositoryImpl(
         return null
     }
 
+    private suspend fun recordTransientFailure(
+        installedTag: String?,
+        storedLatestTag: String?,
+        packageName: String,
+    ) {
+        val now = System.currentTimeMillis()
+        if (VersionMath.shouldRetainSnapshotBaseline(installedTag, storedLatestTag)) {
+            installedAppsDao.updateLastChecked(packageName, now)
+        } else {
+            installedAppsDao.clearUpdateMetadata(packageName, now)
+        }
+    }
+
+    private suspend fun recordUnmatchedRelease(packageName: String) {
+        installedAppsDao.clearUpdateFlagKeepBaseline(packageName, System.currentTimeMillis())
+    }
+
+    private suspend fun adoptMatchedTag(
+        app: InstalledAppEntity,
+        matchedTag: String,
+        isUpdateAvailable: Boolean,
+    ) {
+        installedAppsDao.updateInstalledVersion(
+            packageName = app.packageName,
+            installedVersion = matchedTag,
+            installedVersionName = app.installedVersionName,
+            installedVersionCode = app.installedVersionCode,
+            isUpdateAvailable = isUpdateAvailable,
+        )
+    }
+
     override suspend fun checkForUpdates(packageName: String): Boolean {
         val app = installedAppsDao.getAppByPackage(packageName) ?: return false
 
@@ -274,8 +305,7 @@ class InstalledAppsRepositoryImpl(
                 )
 
             if (releases.isEmpty()) {
-
-                installedAppsDao.clearUpdateMetadata(packageName, System.currentTimeMillis())
+                recordTransientFailure(app.installedVersion, app.latestVersion, packageName)
                 return false
             }
 
@@ -306,55 +336,55 @@ class InstalledAppsRepositoryImpl(
                     "No matching release found for ${app.appName} in window of ${releases.size}; " +
                             "filter=${app.assetFilterRegex}, fallback=${app.fallbackToOlderReleases}"
                 }
-
-                installedAppsDao.clearUpdateMetadata(packageName, System.currentTimeMillis())
+                recordUnmatchedRelease(packageName)
                 return false
             }
 
             val (matchedRelease, primaryAsset, variantWasLost) = resolved
 
-            val installedCode = app.installedVersionCode
-            val latestCode = app.latestVersionCode
-            val codesAlreadyMatch =
-                installedCode > 0L &&
-                        latestCode != null &&
-                        latestCode > 0L &&
-                        installedCode == latestCode &&
-                        matchedRelease.tagName == app.latestVersion
+            val verdict =
+                UpdateVerdict.decide(
+                    installed =
+                        UpdateVerdict.Installed(
+                            tag = app.installedVersion,
+                            versionCode = app.installedVersionCode,
+                        ),
+                    stored =
+                        UpdateVerdict.Stored(
+                            latestTag = app.latestVersion,
+                            latestVersionCode = app.latestVersionCode,
+                            publishedAt = app.latestReleasePublishedAt,
+                            wasUpdateAvailable = app.isUpdateAvailable,
+                            latestReleaseId = app.latestReleaseId,
+                            latestAssetId = app.latestAssetId,
+                            latestAssetDigest = app.latestAssetDigest,
+                            latestAssetSize = app.latestAssetSize,
+                        ),
+                    matched =
+                        UpdateVerdict.Matched(
+                            tag = matchedRelease.tagName,
+                            publishedAt = matchedRelease.publishedAt,
+                            isPrerelease = matchedRelease.isPrerelease,
+                            releaseId = matchedRelease.id,
+                            assetId = primaryAsset.id,
+                            assetDigest = primaryAsset.digest,
+                            assetSize = primaryAsset.size,
+                        ),
+                    skippedTag = app.skippedReleaseTag,
+                )
 
-            val skippedTag = app.skippedReleaseTag
-            val matchesSkipped =
-                skippedTag != null &&
-                        VersionMath.isExactSameVersion(matchedRelease.tagName, skippedTag)
-            val skipBecameStale =
-                skippedTag != null &&
-                        !matchesSkipped &&
-                        VersionMath.isVersionNewer(matchedRelease.tagName, skippedTag)
-            if (skipBecameStale) {
+            if (verdict.skipBecameStale) {
                 installedAppsDao.setSkippedReleaseTag(packageName, null)
             }
 
-            val reconcilable =
-                VersionMath.versionsReconcilable(app.installedVersion, matchedRelease.tagName)
-            val isUpdateAvailable =
-                when {
-                    codesAlreadyMatch -> false
-                    matchesSkipped -> false
-                    !reconcilable -> false
-                    else ->
-                        VersionMath.isVersionNewer(
-                            candidate = matchedRelease.tagName,
-                            current = app.installedVersion,
-                        )
-                }
+            val isUpdateAvailable = verdict.isUpdateAvailable
 
             Logger.d {
-                "Update check for ${app.appName}: " +
-                        "installedTag=${app.installedVersion}, " +
-                        "matchedTag=${matchedRelease.tagName}, " +
-                        "matchedAsset=${primaryAsset.name}, " +
-                        "codesMatch=$codesAlreadyMatch, " +
-                        "isUpdate=$isUpdateAvailable, variantLost=$variantWasLost"
+                "[UPDATE-CHECK] ${app.appName} $packageName " +
+                        "installedTag=${app.installedVersion} matchedTag=${matchedRelease.tagName} " +
+                        "storedPublishedAt=${app.latestReleasePublishedAt} " +
+                        "matchedPublishedAt=${matchedRelease.publishedAt} " +
+                        "isUpdate=$isUpdateAvailable"
             }
 
             val resolvedLatestVersionCode =
@@ -367,6 +397,9 @@ class InstalledAppsRepositoryImpl(
                 assetName = primaryAsset.name,
                 assetUrl = primaryAsset.downloadUrl,
                 assetSize = primaryAsset.size,
+                releaseId = matchedRelease.id,
+                assetId = primaryAsset.id,
+                assetDigest = primaryAsset.digest,
                 releaseNotes = matchedRelease.description ?: "",
                 timestamp = System.currentTimeMillis(),
                 latestVersionName = matchedRelease.tagName,
@@ -374,15 +407,17 @@ class InstalledAppsRepositoryImpl(
                 latestReleasePublishedAt = matchedRelease.publishedAt,
             )
 
-            if ((codesAlreadyMatch || !reconcilable) &&
-                app.installedVersion != matchedRelease.tagName
-            ) {
-                installedAppsDao.updateInstalledVersion(
-                    packageName = packageName,
-                    installedVersion = matchedRelease.tagName,
-                    installedVersionName = app.installedVersionName,
-                    installedVersionCode = installedCode,
-                    isUpdateAvailable = false,
+            val shouldRewriteTag =
+                UpdateVerdict.shouldAdoptMatchedTag(
+                    codesAlreadyMatch = verdict.codesAlreadyMatch,
+                    installedTag = app.installedVersion,
+                    matchedTag = matchedRelease.tagName,
+                )
+            if (shouldRewriteTag) {
+                adoptMatchedTag(
+                    app = app,
+                    matchedTag = matchedRelease.tagName,
+                    isUpdateAvailable = isUpdateAvailable,
                 )
             }
 
@@ -416,34 +451,6 @@ class InstalledAppsRepositoryImpl(
         }
     }
 
-    /**
-     * Whether [candidateTag] names a build after [referenceTag], used to answer "is there still
-     * an update after this install?".
-     *
-     * The codes decide it whenever both are known: they are monotonic, while the tags this app
-     * tracks are not (`nightly`, `v0.5.9.5`, `26.08.11f15e4`). Reading the ordering off the
-     * codes keeps this record's own update flag and its latestVersionCode from being written
-     * from a guess. Tags remain the fallback when a code is missing, matching the order
-     * resolveExternalInstallVerdict already uses.
-     *
-     * A blank candidate names nothing, so it is never ahead — that has to be checked here
-     * because the code branch would otherwise be entered with a real candidate code and report
-     * an ordering for a tag that does not exist.
-     */
-    private fun isAheadOf(
-        candidateTag: String?,
-        referenceTag: String,
-        candidateCode: Long?,
-        referenceCode: Long,
-    ): Boolean =
-        when {
-            candidateTag.isNullOrBlank() -> false
-            candidateCode != null && candidateCode > 0L && referenceCode > 0L -> candidateCode > referenceCode
-            else ->
-                referenceTag.isNotBlank() &&
-                    VersionMath.isVersionNewer(candidateTag, referenceTag)
-        }
-
     override suspend fun updateAppVersion(
         packageName: String,
         newTag: String,
@@ -474,72 +481,19 @@ class InstalledAppsRepositoryImpl(
             ),
         )
 
-        val snapshotLatestVersion = app.latestVersion
-        // The three codes this rewrite reasons about: A is the detected latest, B what the record
-        // says is installed, C the build being installed.
-        val detectedCode = app.latestVersionCode
-        val installedCode = app.installedVersionCode
-        val incomingCode = newVersionCode
-        // Whether the build underneath actually changed, which is all this rewrite asks of the
-        // codes. B == C means nothing moved — a reinstall, or the same build seen twice — and
-        // then there is no state to derive, so the record is left as a plain copy.
-        val codeMoved = installedCode > 0L && incomingCode > 0L && incomingCode != installedCode
-        // Whether the record's idea of the latest is still ahead of the build being installed.
-        // Worked out once and reused below: the skip decision and the availability flag must not
-        // come from two evaluations that could drift apart in a later edit.
-        val latestAhead =
-            isAheadOf(snapshotLatestVersion, newTag, detectedCode, incomingCode)
-        // The record is about to call this build installed, so `codeMoved` says the install
-        // landed somewhere new, and `latestAhead` says a release still sits above where it
-        // landed. Offered any more it would only re-open a gap the user has just closed, and
-        // that holds whatever the two builds were: no direction is read out of the tags here.
-        //
-        // One exception, and it is the whole point of it: a tag that already names several
-        // builds must not carry a skip. The skip is keyed by tag, so writing this one down would
-        // say "stop offering `nightly`" — and the record's own `nightly` is exactly such a tag,
-        // having been called installed while the build underneath moved. The next `nightly`
-        // really is a new build and deserves to be shown, so the tag is left unskipped and the
-        // build that moved makes it recognisable here rather than needing a second lookup.
-        val tagNamesSeveralBuilds =
-            codeMoved && app.installedVersion == newTag
-        val skippedReleaseTag =
-            if (codeMoved && !tagNamesSeveralBuilds && latestAhead) {
-                snapshotLatestVersion
-            } else {
-                app.skippedReleaseTag
-            }
-        // An already-skipped release stays skipped here too: checkForUpdates is the only other
-        // place that consults skippedReleaseTag, so without the last term a rewrite would
-        // re-advertise the version the user had declined.
-        val isUpdateStillAvailable =
-            latestAhead &&
-                !VersionMath.isExactSameVersion(snapshotLatestVersion, skippedReleaseTag)
-
         installedAppsDao.updateApp(
-            app.copy(
-                installedVersion = newTag,
-                installedAssetName = newAssetName,
-                installedAssetUrl = newAssetUrl,
-                installedVersionName = newVersionName,
-                installedVersionCode = newVersionCode,
-                isUpdateAvailable = isUpdateStillAvailable,
-                skippedReleaseTag = skippedReleaseTag,
-                // Kept alongside `latestVersion`, which can still name a newer release than the
-                // one just installed. Falling through to `newVersionCode` would pair that newer
-                // tag with the older build's code, and downstream reads this code as the latest.
-                latestVersionCode = if (latestAhead) app.latestVersionCode else newVersionCode,
-                isPendingInstall = isPendingInstall,
-                lastUpdatedAt = System.currentTimeMillis(),
-                lastCheckedAt = System.currentTimeMillis(),
-                signingFingerprint = signingFingerprint,
-
-                pendingInstallFilePath =
-                    if (isPendingInstall) app.pendingInstallFilePath else null,
-                pendingInstallVersion =
-                    if (isPendingInstall) app.pendingInstallVersion else null,
-                pendingInstallAssetName =
-                    if (isPendingInstall) app.pendingInstallAssetName else null,
-            ),
+            app.toDomain()
+                .confirmInstall(
+                    tag = newTag,
+                    assetName = newAssetName,
+                    assetUrl = newAssetUrl,
+                    versionName = newVersionName,
+                    versionCode = newVersionCode,
+                    signingFingerprint = signingFingerprint,
+                    isPending = isPendingInstall,
+                    at = System.currentTimeMillis(),
+                )
+                .toEntity(),
         )
     }
 
@@ -568,7 +522,11 @@ class InstalledAppsRepositoryImpl(
         isPending: Boolean,
     ) {
         val app = installedAppsDao.getAppByPackage(packageName) ?: return
-        installedAppsDao.updateApp(app.copy(isPendingInstall = isPending))
+        installedAppsDao.updateApp(
+            app.toDomain()
+                .let { if (isPending) it.markPending() else it.clearPending() }
+                .toEntity(),
+        )
     }
 
     override suspend fun setIncludePreReleases(
@@ -747,13 +705,7 @@ class InstalledAppsRepositoryImpl(
         return try {
             val releases = client.getReleases(owner, repo, perPage = RELEASE_WINDOW).getOrNull()
                 ?: return emptyList()
-            releases
-                .asSequence()
-                .filter { it.draft != true }
-                .sortedByDescending { it.publishedAt ?: it.createdAt ?: "" }
-                .map { it.toDomain() }
-                .filter { includePreReleases || !it.isEffectivelyPreRelease() }
-                .toList()
+            releases.toReleaseWindow(includePreReleases)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
