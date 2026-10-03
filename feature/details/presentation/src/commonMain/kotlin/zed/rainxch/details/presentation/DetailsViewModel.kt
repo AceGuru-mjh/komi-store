@@ -2,6 +2,11 @@ package zed.rainxch.details.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.collections.immutable.ImmutableMap
+import kotlinx.collections.immutable.ImmutableSet
+import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toImmutableMap
+import kotlinx.collections.immutable.toImmutableSet
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -26,6 +31,7 @@ import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.resources.getString
 import zed.rainxch.core.domain.logging.KomiStoreLogger
 import zed.rainxch.core.domain.model.apk.ApkPackageInfo
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
 import zed.rainxch.core.domain.model.repository.FavoriteRepo
 import zed.rainxch.core.domain.model.account.github.GithubAsset
 import zed.rainxch.core.domain.model.account.github.GithubRelease
@@ -54,10 +60,13 @@ import zed.rainxch.core.domain.model.installation.InstallerType
 import zed.rainxch.core.domain.repository.UserSessionRepository
 import zed.rainxch.core.domain.system.PackageMonitor
 import zed.rainxch.core.domain.use_cases.SyncInstalledAppsUseCase
+import zed.rainxch.core.domain.utils.platforms
+import zed.rainxch.core.domain.utils.toDiscoveryPlatform
 import zed.rainxch.core.presentation.utils.daysSinceIso
 import zed.rainxch.core.domain.utils.AssetFilter
 import zed.rainxch.core.domain.utils.AssetOwnership
 import zed.rainxch.core.domain.utils.AssetVariant
+import zed.rainxch.core.domain.utils.ReleaseLines
 import zed.rainxch.core.domain.utils.VersionMath
 import zed.rainxch.core.domain.helpers.BrowserHelper
 import zed.rainxch.core.domain.helpers.ShareManager
@@ -147,7 +156,7 @@ class DetailsViewModel(
     private var aboutTranslationJob: Job? = null
     private var whatsNewTranslationJob: Job? = null
 
-    private val _state = MutableStateFlow(RawDetailsState())
+    private val _state = MutableStateFlow(RawDetailsState(devicePlatform = platform.toDiscoveryPlatform()))
     val state: StateFlow<DetailsState> =
         _state
             .onStart {
@@ -512,7 +521,24 @@ class DetailsViewModel(
             }
 
             is DetailsAction.OnPlatformChipClick -> {
-                // Handled in composable
+                if (action.platform == _state.value.devicePlatform) {
+                    jumpToDeviceBuild()
+                } else {
+                    _state.update { it.copy(handoffPlatform = action.platform) }
+                }
+            }
+
+            DetailsAction.OnJumpToDeviceBuild -> {
+                jumpToDeviceBuild()
+            }
+
+            DetailsAction.OnDismissPlatformHandoff -> {
+                _state.update { it.copy(handoffPlatform = null) }
+            }
+
+            is DetailsAction.OnShareAssetLink -> {
+                runCatching { shareManager.shareText(action.assetUrl) }
+                    .onFailure { logger.warn("Share asset link failed: ${it.message}") }
             }
 
             is DetailsAction.OnMessage -> {
@@ -912,7 +938,10 @@ class DetailsViewModel(
                         sourceHost = sourceHostParam,
                     )
 
-                val byPrevCategory = releases.firstInCategory(prevCategory)
+                val deviceBuildIds = deviceBuildReleaseIds(releases)
+                val byPrevCategory =
+                    releases.filter { it.id in deviceBuildIds }.firstInCategory(prevCategory)
+                        ?: releases.firstInCategory(prevCategory)
                 val selected = byPrevCategory
                     ?: releases.firstOrNull { !it.isEffectivelyPreRelease() }
                     ?: releases.firstOrNull()
@@ -936,6 +965,9 @@ class DetailsViewModel(
                     it.copy(
                         installedApp = newInstalledApp,
                         allReleases = releases,
+                        releasePlatforms = platformsByRelease(releases),
+                        deviceBuildReleaseIds = deviceBuildIds,
+                        releaseLines = releaseLines(releases),
                         releasesLoadFailed = false,
                         isRetryingReleases = false,
                         selectedRelease = selected,
@@ -1275,7 +1307,8 @@ class DetailsViewModel(
                 ReleaseCategory.PRE_RELEASE -> _state.value.allReleases.filter { it.isEffectivelyPreRelease() }
                 ReleaseCategory.ALL -> _state.value.allReleases
             }
-        val newSelected = filtered.firstOrNull()
+        val deviceBuildIds = _state.value.deviceBuildReleaseIds
+        val newSelected = filtered.firstOrNull { it.id in deviceBuildIds } ?: filtered.firstOrNull()
         val (installable, primary) = recomputeAssetsForRelease(newSelected)
         val newInstalledApp =
             pickPrimaryInstalledApp(_state.value.installedApps, primary?.name, installable)
@@ -1292,6 +1325,42 @@ class DetailsViewModel(
             )
         }
     }
+
+    private fun jumpToDeviceBuild() {
+        val current = _state.value
+        val deviceBuildIds = current.deviceBuildReleaseIds
+        if (current.selectedRelease?.id in deviceBuildIds) return
+        val selectedLine = current.selectedRelease?.let { current.releaseLines[it.id] }
+        val targets = current.allReleases.filter {
+            it.id in deviceBuildIds && (selectedLine == null || current.releaseLines[it.id] == selectedLine)
+        }
+        val inCategory = targets.firstInCategory(current.selectedReleaseCategory)
+        when {
+            inCategory != null -> onAction(DetailsAction.SelectRelease(inCategory))
+            targets.isNotEmpty() -> {
+                onAction(DetailsAction.SelectReleaseCategory(ReleaseCategory.ALL))
+                onAction(DetailsAction.SelectRelease(targets.first()))
+            }
+        }
+    }
+
+    private fun releaseLines(releases: List<GithubRelease>): ImmutableMap<Long, String> =
+        if (ReleaseLines.isMultiLine(releases)) {
+            releases.associate { it.id to ReleaseLines.of(it.tagName) }.toImmutableMap()
+        } else {
+            persistentMapOf()
+        }
+
+    private fun platformsByRelease(
+        releases: List<GithubRelease>,
+    ): ImmutableMap<Long, Set<DiscoveryPlatform>> =
+        releases.associate { it.id to it.platforms() }.toImmutableMap()
+
+    private fun deviceBuildReleaseIds(releases: List<GithubRelease>): ImmutableSet<Long> =
+        releases
+            .filter { release -> release.assets.any { installer.isAssetInstallable(it.name) } }
+            .map { it.id }
+            .toImmutableSet()
 
     private fun openAppManager() {
         viewModelScope.launch {
@@ -2652,6 +2721,7 @@ class DetailsViewModel(
                     } else {
                         ReleaseCategory.STABLE
                     }
+                val deviceBuildIds = deviceBuildReleaseIds(allReleases)
                 val selectedRelease =
                     installedApp?.let { app ->
                         allReleases.firstOwnedBy(
@@ -2661,6 +2731,7 @@ class DetailsViewModel(
                             anchorAssetName = installedAssetName,
                         )
                     }
+                        ?: allReleases.filter { it.id in deviceBuildIds }.firstInCategory(installedChannel)
                         ?: allReleases.firstInCategory(installedChannel)
                         ?: allReleases.firstInCategory(ReleaseCategory.ALL)
                 val resolvedCategory =
@@ -2689,6 +2760,9 @@ class DetailsViewModel(
                         errorMessage = null,
                         repository = repo,
                         allReleases = allReleases,
+                        releasePlatforms = platformsByRelease(allReleases),
+                        deviceBuildReleaseIds = deviceBuildIds,
+                        releaseLines = releaseLines(allReleases),
                         releasesLoadFailed = releasesFailed,
                         isRetryingReleases = false,
                         selectedRelease = selectedRelease,
@@ -2855,6 +2929,10 @@ class DetailsViewModel(
                         isRefreshing = false,
                         repository = refreshed,
                         allReleases = freshReleases ?: it.allReleases,
+                        releasePlatforms = freshReleases?.let(::platformsByRelease) ?: it.releasePlatforms,
+                        deviceBuildReleaseIds =
+                            freshReleases?.let(::deviceBuildReleaseIds) ?: it.deviceBuildReleaseIds,
+                        releaseLines = freshReleases?.let(::releaseLines) ?: it.releaseLines,
                         releasesLoadFailed = freshReleases == null && it.releasesLoadFailed,
                         selectedRelease = selectedRelease,
                         selectedReleaseCategory = resolvedCategory,
