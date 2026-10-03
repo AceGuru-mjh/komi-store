@@ -9,10 +9,11 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -122,7 +123,7 @@ fun AppNavigation(
                                     saveState = true
                                 }
                                 launchSingleTop = true
-                                restoreState = true
+                                restoreState = target != GithubStoreGraph.ExploreScreen
                             }
                         },
                         rail = rail,
@@ -154,23 +155,16 @@ fun AppNavigation(
                     SharedTransitionLayout(
                         modifier =
                             Modifier
-                                .background(LocalPersonality.current.colors.background)
-                                .then(
-                                    // Navigation bar clearance is handled here rather than by
-                                    // individual screens: the bottom bar covers the inset when
-                                    // present, so the content is lifted by its measured height
-                                    // instead; otherwise this container reserves the inset itself,
-                                    // since KomiScaffold no longer does.
-                                    if (showBottomBar) {
-                                        Modifier.padding(bottom = bottomBarHeight)
-                                    } else {
-                                        Modifier.navigationBarsPadding()
-                                    },
+                                .padding(
+                                    bottom = if (showBottomBar) bottomBarHeight else 0.dp,
+                                ).then(
+                                    if (showBottomBar) Modifier.consumeWindowInsets(PaddingValues(bottom = bottomBarHeight)) else Modifier,
                                 ),
                     ) {
                         NavHost(
                             navController = navController,
                             startDestination = GithubStoreGraph.ExploreScreen,
+                            modifier = Modifier.background(LocalPersonality.current.colors.background),
                             enterTransition = {
                                 val from = initialState.bottomNavIndex()
                                 val to = targetState.bottomNavIndex()
@@ -349,11 +343,13 @@ fun AppNavigation(
                                             onNavigateBack = {
                                                 navController.navigateUp()
                                             },
-                                            onNavigateToDetails = { repoId, sourceHost ->
+                                            onNavigateToDetails = { repoId, owner, repo, sourceHost ->
                                                 if (isExpanded) {
                                                     listDetailState.select(
                                                         AdaptiveDetailArgs(
                                                             repositoryId = repoId,
+                                                            owner = owner,
+                                                            repo = repo,
                                                             sourceHost = sourceHost,
                                                         ),
                                                     )
@@ -361,6 +357,8 @@ fun AppNavigation(
                                                     navController.navigate(
                                                         GithubStoreGraph.DetailsScreen(
                                                             repositoryId = repoId,
+                                                            owner = owner,
+                                                            repo = repo,
                                                             sourceHost = sourceHost,
                                                         ),
                                                     )
@@ -1017,7 +1015,7 @@ fun AppNavigation(
                                     }
 
                                     launchSingleTop = true
-                                    restoreState = true
+                                    restoreState = it != GithubStoreGraph.ExploreScreen
                                 }
                             },
                             isUpdateAvailable = appsState.apps.any { it.installedApp.isUpdateAvailable },

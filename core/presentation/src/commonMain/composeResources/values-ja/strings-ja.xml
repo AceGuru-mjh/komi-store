@@ -310,8 +310,9 @@
     <!-- Uninstall / Open -->
     <string name="uninstall">アンインストール</string>
     <string name="open_app">開く</string>
-    <string name="downgrade_requires_uninstall">ダウングレードにはアンインストールが必要</string>
-    <string name="downgrade_warning_message">バージョン%1$sのインストールには、現在のバージョン（%2$s）のアンインストールが必要です。アプリデータは失われます。</string>
+    <string name="downgrade_warning_title">古いバージョンを選択しました</string>
+    <string name="downgrade_warning_message">%1$s は、すでにインストールされている %2$s より低いバージョンです。\nAndroid はより低いバージョンのインストールを拒否することがあります。\n拒否された場合、インストール済みの %2$s はそのまま残ります。</string>
+    <string name="downgrade_warning_uninstall_note">%1$s をアンインストールすると、アプリのデータが削除されます。</string>
     <string name="uninstall_first">先にアンインストール</string>
     <string name="install_version">%1$sをインストール</string>
     <string name="failed_to_open_app">%1$sを開けませんでした</string>
@@ -1368,6 +1369,8 @@
 
     <!-- Feed / For You masthead, sidebar, categories -->
     <string name="feed_end_cap">続く · TO BE CONTINUED</string>
+    <string name="feed_layout_description_grid">グリッド表示に切り替え</string>
+    <string name="feed_layout_description_list">リスト表示に切り替え</string>
     <string name="feed_masthead_subtitle">発見 · DISCOVER APPS</string>
     <string name="home_masthead_subtitle">ランキング · CHARTS &amp; PICKS</string>
     <string name="feed_platform_picker_title_jp">対応</string>

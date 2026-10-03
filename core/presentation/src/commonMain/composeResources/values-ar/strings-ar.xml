@@ -185,8 +185,9 @@
     <!-- Uninstall / Open -->
     <string name="uninstall">إزالة التثبيت</string>
     <string name="open_app">فتح</string>
-    <string name="downgrade_requires_uninstall">الرجوع لإصدار أقدم يتطلب إزالة التثبيت</string>
-    <string name="downgrade_warning_message">تثبيت الإصدار %1$s يتطلب إزالة الإصدار الحالي (%2$s) أولاً. سيتم فقدان بيانات التطبيق.</string>
+    <string name="downgrade_warning_title">تم تحديد إصدار أقدم</string>
+    <string name="downgrade_warning_message">%1$s أقل من %2$s المثبّت بالفعل.\nقد يرفض Android تثبيت إصدار أقل.\nإذا رفض ذلك، يبقى %2$s المثبّت كما هو.</string>
+    <string name="downgrade_warning_uninstall_note">إزالة %1$s ستحذف بيانات التطبيق.</string>
     <string name="uninstall_first">إزالة التثبيت أولاً</string>
     <string name="install_version">تثبيت %1$s</string>
     <string name="failed_to_open_app">فشل فتح %1$s</string>
@@ -1436,6 +1437,8 @@
     <string name="repo_pages_pr_draft">مسودة</string>
 
     <string name="feed_end_cap">続く · TO BE CONTINUED</string>
+    <string name="feed_layout_description_grid">التبديل إلى عرض الشبكة</string>
+    <string name="feed_layout_description_list">التبديل إلى عرض القائمة</string>
     <string name="feed_masthead_subtitle">発見 · DISCOVER APPS</string>
     <string name="home_masthead_subtitle">ランキング · CHARTS &amp; PICKS</string>
     <string name="feed_platform_picker_title_jp">対応</string>
