@@ -27,18 +27,43 @@ class AndroidDownloadProgressNotifier(
     ) {
         if (!hasNotificationPermission()) return
 
-        val cancelIntent =
+        // D-8: the notification carries two distinct actions ("pause" keeps the partial and can be
+        // resumed; "delete" erases it). They must differ in *both* action and data URI: with
+        // FLAG_UPDATE_CURRENT a shared identity would collapse the two into one PendingIntent and
+        // both buttons would fire the same operation.
+        val pauseIntent =
             Intent(context, DownloadCancelReceiver::class.java).apply {
                 action = DownloadCancelReceiver.ACTION_CANCEL
-                data = Uri.parse("githubstore-cancel://$packageName")
+                data =
+                    Uri.parse(
+                        "${DownloadCancelReceiver.URI_SCHEME_PAUSE}://$packageName",
+                    )
                 setPackage(context.packageName)
                 putExtra(DownloadCancelReceiver.EXTRA_PACKAGE_NAME, packageName)
             }
-        val cancelPendingIntent =
+        val pausePendingIntent =
             PendingIntent.getBroadcast(
                 context,
                 packageName.hashCode(),
-                cancelIntent,
+                pauseIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+        val discardIntent =
+            Intent(context, DownloadCancelReceiver::class.java).apply {
+                action = DownloadCancelReceiver.ACTION_DISCARD
+                data =
+                    Uri.parse(
+                        "${DownloadCancelReceiver.URI_SCHEME_DISCARD}://$packageName",
+                    )
+                setPackage(context.packageName)
+                putExtra(DownloadCancelReceiver.EXTRA_PACKAGE_NAME, packageName)
+            }
+        val discardPendingIntent =
+            PendingIntent.getBroadcast(
+                context,
+                packageName.hashCode(),
+                discardIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
@@ -57,9 +82,16 @@ class AndroidDownloadProgressNotifier(
                 .setProgress(100, percent ?: 0, indeterminate)
                 .addAction(
                     NotificationCompat.Action.Builder(
-                        android.R.drawable.ic_menu_close_clear_cancel,
-                        CANCEL_LABEL,
-                        cancelPendingIntent,
+                        android.R.drawable.ic_media_pause,
+                        PAUSE_LABEL,
+                        pausePendingIntent,
+                    ).build(),
+                )
+                .addAction(
+                    NotificationCompat.Action.Builder(
+                        android.R.drawable.ic_menu_delete,
+                        DELETE_LABEL,
+                        discardPendingIntent,
                     ).build(),
                 )
 
@@ -111,7 +143,12 @@ class AndroidDownloadProgressNotifier(
 
     private companion object {
         const val DOWNLOADS_CHANNEL_ID = "app_downloads"
-        const val CANCEL_LABEL = "Cancel"
+
+        /** D-8 "pause": stop the transfer but keep the partial so it can resume. */
+        const val PAUSE_LABEL = "Pause"
+
+        /** D-8 "delete": stop the transfer and erase the partial + sidecar. */
+        const val DELETE_LABEL = "Delete"
 
         const val NOTIFICATION_ID_BASE = 3000
     }

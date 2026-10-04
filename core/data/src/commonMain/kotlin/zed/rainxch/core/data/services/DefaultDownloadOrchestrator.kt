@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import zed.rainxch.core.data.data_source.TokenStore
 import zed.rainxch.core.data.network.GithubAssetAuth
 import zed.rainxch.core.domain.model.installation.DownloadProgress
+import zed.rainxch.core.domain.network.AssetIdentity
 import zed.rainxch.core.domain.network.DigestVerifier
 import zed.rainxch.core.domain.network.Downloader
 import zed.rainxch.core.domain.network.SlowDownloadDetector
@@ -57,6 +58,9 @@ class DefaultDownloadOrchestrator(
     private val stateMutex = Mutex()
 
     private val activeJobs = mutableMapOf<String, Job>()
+
+    /** Guards the one-shot lazy orphan sweep (D-7); read/written only under [stateMutex]. */
+    private var orphanSweepStarted = false
 
     override fun observe(packageName: String): Flow<OrchestratedDownload?> =
         _downloads
@@ -101,6 +105,13 @@ class DefaultDownloadOrchestrator(
             _downloads.update { it + (spec.packageName to initial) }
         }
 
+        // D-7: sweep leftovers once per process, lazily, so a session that never reaches the
+        // startup hook still cleans up before its first transfer. Fired *after* the new entry is
+        // registered, which is deliberate — a re-enqueue of an interrupted asset is itself a claim
+        // on that asset's partial, so its bytes must not be swept just before they are resumed.
+        // Non-blocking and failure-tolerant by design: a cleanup problem must never fail a download.
+        maybeReclaimOrphanedPartials()
+
         val job = appScope.launch {
             try {
                 runDownload(spec)
@@ -124,6 +135,55 @@ class DefaultDownloadOrchestrator(
             activeJobs[spec.packageName] = job
         }
         return id
+    }
+
+    /**
+     * Runs the downloader's orphan sweep at most once per process, off the caller's thread.
+     *
+     * This is the **only** sweep. Nothing sweeps at startup: an empty claim set would mean "nothing
+     * is claimed", which would delete the partial of a download the user merely paused, or of one
+     * the process was killed during — the very bytes resume exists to keep. Deferring to the first
+     * enqueue gives the sweep a meaningful claim set instead of an empty one, and the process pays
+     * nothing when the user never downloads anything.
+     *
+     * The claim set is the scoped asset name of every entry currently in [_downloads]. That
+     * in-memory registry is the only owner a partial can have — cards are not persisted across
+     * process restarts by design — so an entry present here means "the user can still see and
+     * resume this download". The just-enqueued entry is intentionally included: it is a real
+     * claim, and excluding it would delete the very partial [enqueue] is about to resume. That is
+     * also what makes a partial from a previous process resumable: re-enqueuing its asset claims
+     * the name before the sweep runs.
+     *
+     * Failures are swallowed and logged: cleanup is best-effort and must never affect a download.
+     */
+    private suspend fun maybeReclaimOrphanedPartials() {
+        val shouldSweep =
+            stateMutex.withLock {
+                if (orphanSweepStarted) {
+                    false
+                } else {
+                    orphanSweepStarted = true
+                    true
+                }
+            }
+        if (!shouldSweep) return
+
+        val claimed =
+            _downloads.value.values
+                .map { AssetFileName.scoped(it.repoOwner, it.repoName, it.assetName) }
+                .toSet()
+        appScope.launch {
+            try {
+                val removed = downloader.reclaimOrphanedPartials(claimed)
+                if (removed > 0) {
+                    Logger.d { "Orchestrator: reclaimed $removed orphaned partial file(s)" }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.w(e) { "Orchestrator: orphan partial reclaim failed" }
+            }
+        }
     }
 
     private suspend fun runDownload(spec: DownloadSpec) {
@@ -167,8 +227,21 @@ class DefaultDownloadOrchestrator(
             }
         }
 
+        val identity =
+            AssetIdentity(
+                assetId = spec.asset.id,
+                digest = spec.asset.digest,
+                size = spec.asset.size,
+            )
+
         try {
-            streamProgress(multiSourceDownloader.download(spec.asset.downloadUrl, scopedName))
+            streamProgress(
+                multiSourceDownloader.download(
+                    spec.asset.downloadUrl,
+                    scopedName,
+                    identity = identity,
+                ),
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -178,11 +251,10 @@ class DefaultDownloadOrchestrator(
                 "Orchestrator: primary download failed for ${spec.asset.name}, " +
                     "retrying via authenticated GitHub asset API"
             }
-            updateEntry(spec.packageName) {
-                it.copy(bytesDownloaded = 0L, progressPercent = 0)
-            }
             slowDownloadDetector.reset()
-            streamProgress(downloader.download(apiUrl, scopedName, bypassMirror = true))
+            streamProgress(
+                downloader.download(apiUrl, scopedName, bypassMirror = true, identity = identity),
+            )
         }
 
         val filePath =
@@ -419,6 +491,30 @@ class DefaultDownloadOrchestrator(
 
         stateMutex.withLock {
             _downloads.update { it - packageName }
+        }
+    }
+
+    /**
+     * D-8 "delete": [cancel] is the pause half (stops the transfer, keeps `.part` + sidecar so the
+     * next [enqueue] resumes); this method is the delete half, so it also erases the bytes.
+     *
+     * The byte deletion is delegated to the downloader, which owns the naming scheme and the
+     * per-name write lock — the orchestrator must not reconstruct partial paths itself.
+     */
+    override suspend fun discard(packageName: String) {
+        val entry = _downloads.value[packageName]
+        // Pause first: cancel the job, cancel the Call, clear a parked install, drop the entry.
+        cancel(packageName)
+        if (entry != null) {
+            val scopedName =
+                AssetFileName.scoped(entry.repoOwner, entry.repoName, entry.assetName)
+            try {
+                downloader.discardPartial(scopedName)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.w(e) { "Orchestrator: discardPartial failed for $scopedName" }
+            }
         }
     }
 
